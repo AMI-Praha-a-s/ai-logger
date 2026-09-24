@@ -90,8 +90,8 @@ This will send the log message, context data, log level, and timestamp as a JSON
 3. **Inspect Received Payload**: Confirm the JSON payload arrives at your test webhook.
 
 ## Requirements
-- **PHP:** `^7.4 | ^8.0 | ^8.1 | ^8.2 | ^8.3`
-- **Laravel:** `^8.0 | ^9.0 | ^10.0 | ^11.0 | ^12.0`
+- **PHP:** `^8.3`
+- **Laravel:** `^10.0 | ^11.0 | ^12.0 | ^13.0`
 
 ## Contributing
 Contributions are welcome!
