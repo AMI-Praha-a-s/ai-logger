@@ -23,6 +23,11 @@ class AILogger extends AbstractProcessingHandler
 
     protected const MAX_PREVIOUS_EXCEPTIONS = 5;
 
+    /**
+     * Only the first frames of a stack trace are sent, the ai-logger app identifies an exception by its top frames.
+     */
+    protected const MAX_TRACE_FRAMES = 100;
+
     protected ?string $webhookUrl;
     protected ?string $sourceCode;
     protected ?string $sourceName;
@@ -225,13 +230,15 @@ class AILogger extends AbstractProcessingHandler
 
     protected function formatExceptionToArray(Throwable $e): array
     {
+        $frames = $e->getTrace();
+
         $exception = [
             'type' => $this->withoutAnonymousClassSuffix(get_class($e)),
             'message' => $e->getMessage(),
             'code' => $e->getCode(),
             'file' => $e->getFile(),
             'line' => $e->getLine(),
-            'trace' => collect($e->getTrace())->map(function ($trace) {
+            'trace' => collect(array_slice($frames, 0, static::MAX_TRACE_FRAMES))->map(function ($trace) {
                 $frame = Arr::only($trace, ['file', 'line', 'function', 'class', 'type']);
 
                 if (isset($frame['class'])) {
@@ -241,6 +248,11 @@ class AILogger extends AbstractProcessingHandler
                 return $frame;
             })->all(),
         ];
+
+        // Cut from the end, so the frames the ai-logger app groups exceptions by stay the same
+        if (count($frames) > static::MAX_TRACE_FRAMES) {
+            $exception['trace_omitted_frames'] = count($frames) - static::MAX_TRACE_FRAMES;
+        }
 
         if ($this->codeSnippets) {
             $snippets = $this->getCodeSnippets($e);
@@ -522,7 +534,7 @@ class AILogger extends AbstractProcessingHandler
         }
     }
 
-    protected function getUserId(): ?int
+    protected function getUserId(): int|string|null
     {
         try {
             return Auth::id();

@@ -86,6 +86,8 @@ An exception logged as `context.exception` (as Laravel's exception handler does)
 - `previous` – the exception that caused it, nested the same way (each with `type`, `message`, `code`, `file`, `line` and its own `previous`), up to 5 levels deep.
 - `snippets` – the code around the line the exception and its causes were thrown on and around the lines of the first stack frames, for up to 4 locations in the application's own files (never `vendor/` or `node_modules/`). Each one is `file`, `line` and `code`, the numbered lines with the line itself marked by `>`. Set `codeSnippets` to `false` not to send any code.
 
+The stack trace is cut to its first 100 frames; `trace_omitted_frames` then says how many were left out.
+
 Anything else logged as `context.exception` is sent as it is.
 
 ### Console and queue context

@@ -155,6 +155,29 @@ class ExceptionDataTest extends TestCase
         $this->assertStringNotContainsString("\0", json_encode($sent));
     }
 
+    public function test_a_long_stack_trace_is_cut_from_the_end(): void
+    {
+        $recurse = function (int $depth) use (&$recurse): void {
+            if ($depth === 0) {
+                throw new RuntimeException('Category tree too deep');
+            }
+
+            $recurse($depth - 1);
+        };
+
+        try {
+            $recurse(150);
+        } catch (RuntimeException $e) {
+            Log::error('Category tree too deep', ['exception' => $e]);
+        }
+
+        $sent = $this->lastSentPayload()['context']['exception'];
+
+        $this->assertCount(100, $sent['trace']);
+        $this->assertSame(count($e->getTrace()) - 100, $sent['trace_omitted_frames']);
+        $this->assertSame($e->getTrace()[0]['line'], $sent['trace'][0]['line']);
+    }
+
     public function test_something_else_logged_as_the_exception_is_sent_as_it_is(): void
     {
         Log::error('Something went wrong.', ['exception' => 'Some exception info']);
