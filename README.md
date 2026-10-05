@@ -109,7 +109,7 @@ Logs written from artisan commands and queued jobs describe where they came from
 3. **Inspect Received Payload**: Confirm the JSON payload arrives at your test webhook.
 
 ## Requirements
-- **PHP:** `^8.3`
+- **PHP:** `^8.2`
 - **Laravel:** `^10.0 | ^11.0 | ^12.0 | ^13.0`
 
 ## Contributing
