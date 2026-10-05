@@ -13,6 +13,16 @@ use Illuminate\Support\Facades\App;
 
 class AILogger extends AbstractProcessingHandler
 {
+    /**
+     * Code snippets are sent for this many locations of an exception, around this many lines before and after.
+     */
+    protected const MAX_CODE_SNIPPETS = 4;
+    protected const CODE_SNIPPET_RADIUS = 8;
+    protected const MAX_CODE_SNIPPET_LINE_LENGTH = 300;
+    protected const MAX_CODE_SNIPPET_FILE_SIZE = 1024 * 1024;
+
+    protected const MAX_PREVIOUS_EXCEPTIONS = 5;
+
     protected ?string $webhookUrl;
     protected ?string $sourceCode;
     protected ?string $sourceName;
@@ -21,6 +31,7 @@ class AILogger extends AbstractProcessingHandler
     protected ?string $sourceGitProjectName;
     protected ?string $sourceJiraProjectCode;
     protected ?string $sourceJiraParentProjectKey;
+    protected bool $codeSnippets;
 
     public function __construct(
         ?string $webhookUrl = null,
@@ -32,7 +43,8 @@ class AILogger extends AbstractProcessingHandler
         ?string $sourceJiraProjectCode = null,
         ?string $sourceJiraParentProjectKey = null,
         int $level = 100, // debug
-        bool $bubble = true
+        bool $bubble = true,
+        bool $codeSnippets = true
     ) {
         parent::__construct($level, $bubble);
 
@@ -44,6 +56,7 @@ class AILogger extends AbstractProcessingHandler
         $this->sourceGitProjectName = $sourceGitProjectName;
         $this->sourceJiraProjectCode = $sourceJiraProjectCode;
         $this->sourceJiraParentProjectKey = $sourceJiraParentProjectKey;
+        $this->codeSnippets = $codeSnippets;
     }
 
     /**
@@ -74,6 +87,7 @@ class AILogger extends AbstractProcessingHandler
                     'environment' => $this->getEnvironment(),
                     'command' => $this->getConsoleCommand(),
                     'queue_job' => QueueJobContext::job(),
+                    'logged_at' => $record->datetime->format('Y-m-d\TH:i:s.uP'),
                 ],
                 'performance_data' => [
                     'memory_usage' => [
@@ -108,11 +122,18 @@ class AILogger extends AbstractProcessingHandler
                 ],
             ];
 
-            if (!empty($record->context['exception'])) {
+            // Data of Laravel's Context and of Monolog processors, last as the ai-logger app cuts debug_data from the end
+            if (!empty($record->extra)) {
+                $payload['debug_data']['extra'] = $record->extra;
+            }
+
+            // Anything else logged as "exception" is sent as it is
+            if (($record->context['exception'] ?? null) instanceof Throwable) {
                 $payload['context']['exception'] = $this->formatExceptionToArray($record->context['exception']);
             }
 
-            $jsonPayload = json_encode($payload);
+            // Invalid UTF-8 (e.g. in a code snippet) or a value json_encode() cannot handle must not lose the whole log
+            $jsonPayload = json_encode($payload, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
             if ($jsonPayload === false) {
                 $this->logInternalError('JSON encoding error - ' . json_last_error_msg());
@@ -204,16 +225,174 @@ class AILogger extends AbstractProcessingHandler
 
     protected function formatExceptionToArray(Throwable $e): array
     {
-        return [
-            'type' => get_class($e),
+        $exception = [
+            'type' => $this->withoutAnonymousClassSuffix(get_class($e)),
             'message' => $e->getMessage(),
             'code' => $e->getCode(),
             'file' => $e->getFile(),
             'line' => $e->getLine(),
             'trace' => collect($e->getTrace())->map(function ($trace) {
-                return Arr::only($trace, ['file', 'line', 'function', 'class', 'type']);
+                $frame = Arr::only($trace, ['file', 'line', 'function', 'class', 'type']);
+
+                if (isset($frame['class'])) {
+                    $frame['class'] = $this->withoutAnonymousClassSuffix($frame['class']);
+                }
+
+                return $frame;
             })->all(),
         ];
+
+        if ($this->codeSnippets) {
+            $snippets = $this->getCodeSnippets($e);
+
+            if (!empty($snippets)) {
+                $exception['snippets'] = $snippets;
+            }
+        }
+
+        if ($e->getPrevious() !== null) {
+            $exception['previous'] = $this->formatPreviousException($e->getPrevious());
+        }
+
+        return $exception;
+    }
+
+    /**
+     * The exception that caused another one, nested the way Monolog's normalizer does it.
+     *
+     * @param Throwable $e
+     * @param int $depth
+     * @return array
+     */
+    protected function formatPreviousException(Throwable $e, int $depth = 1): array
+    {
+        $exception = [
+            'type' => $this->withoutAnonymousClassSuffix(get_class($e)),
+            'message' => $e->getMessage(),
+            'code' => $e->getCode(),
+            'file' => $e->getFile(),
+            'line' => $e->getLine(),
+        ];
+
+        if ($e->getPrevious() !== null && $depth < static::MAX_PREVIOUS_EXCEPTIONS) {
+            $exception['previous'] = $this->formatPreviousException($e->getPrevious(), $depth + 1);
+        }
+
+        return $exception;
+    }
+
+    /**
+     * Anonymous classes are named "class@anonymous" followed by a NUL byte and their file, which PostgreSQL rejects.
+     *
+     * @param string $class
+     * @return string
+     */
+    protected function withoutAnonymousClassSuffix(string $class): string
+    {
+        $position = strpos($class, "\0");
+
+        return $position === false ? $class : substr($class, 0, $position);
+    }
+
+    /**
+     * The code around the line the exception was thrown on, the lines its causes were thrown on
+     * and the lines of the first application frames.
+     *
+     * @param Throwable $e
+     * @return array
+     */
+    protected function getCodeSnippets(Throwable $e): array
+    {
+        try {
+            $locations = [];
+
+            for ($cause = $e, $depth = 0; $cause !== null && $depth <= static::MAX_PREVIOUS_EXCEPTIONS; $cause = $cause->getPrevious(), $depth++) {
+                $locations[] = ['file' => $cause->getFile(), 'line' => $cause->getLine()];
+            }
+
+            foreach ($e->getTrace() as $frame) {
+                if (isset($frame['file'], $frame['line'])) {
+                    $locations[] = ['file' => $frame['file'], 'line' => $frame['line']];
+                }
+            }
+
+            $snippets = [];
+            $seen = [];
+
+            foreach ($locations as $location) {
+                if (count($snippets) >= static::MAX_CODE_SNIPPETS) {
+                    break;
+                }
+
+                $key = $location['file'] . ':' . $location['line'];
+
+                if (isset($seen[$key]) || !$this->isApplicationFile($location['file'])) {
+                    continue;
+                }
+
+                $seen[$key] = true;
+                $code = $this->readCodeAround($location['file'], (int) $location['line']);
+
+                if ($code !== null) {
+                    $snippets[] = ['file' => $location['file'], 'line' => (int) $location['line'], 'code' => $code];
+                }
+            }
+
+            return $snippets;
+        } catch (Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Whether the file is the application's own code, by the rule the ai-logger app tells library frames apart with.
+     *
+     * @param string $file
+     * @return bool
+     */
+    protected function isApplicationFile(string $file): bool
+    {
+        $path = str_replace('\\', '/', $file);
+
+        if (str_contains($path, '/vendor/') || str_contains($path, '/node_modules/')) {
+            return false;
+        }
+
+        return is_file($file) && is_readable($file) && filesize($file) <= static::MAX_CODE_SNIPPET_FILE_SIZE;
+    }
+
+    /**
+     * The lines around $line, numbered, the line itself marked with ">". One string, as the ai-logger app
+     * trims every string it receives, which would strip the indentation of separately sent lines.
+     *
+     * @param string $file
+     * @param int $line
+     * @return string|null
+     */
+    protected function readCodeAround(string $file, int $line): ?string
+    {
+        $source = file($file, FILE_IGNORE_NEW_LINES);
+
+        if ($source === false || $line < 1 || $line > count($source)) {
+            return null;
+        }
+
+        $first = max(1, $line - static::CODE_SNIPPET_RADIUS);
+        $last = min(count($source), $line + static::CODE_SNIPPET_RADIUS);
+        $width = strlen((string) $last);
+        $lines = [];
+
+        for ($number = $first; $number <= $last; $number++) {
+            $code = rtrim(str_replace("\0", '', $source[$number - 1]));
+
+            if (strlen($code) > static::MAX_CODE_SNIPPET_LINE_LENGTH) {
+                $code = substr($code, 0, static::MAX_CODE_SNIPPET_LINE_LENGTH) . '…';
+            }
+
+            $lines[] = rtrim(str_pad((string) $number, $width) . ($number === $line ? ' > ' : ' | ') . $code);
+        }
+
+        return implode("\n", $lines);
     }
 
     protected function getRequestUrl(): ?string

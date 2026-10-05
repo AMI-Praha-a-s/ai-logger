@@ -57,6 +57,7 @@ return [
             'sourceGitProjectName' => env('AI_LOGGER_SOURCE_GIT_PROJECT_NAME'),
             'sourceJiraProjectCode' => env('AI_LOGGER_SOURCE_JIRA_PROJECT_CODE'),
             'sourceJiraParentProjectKey' => env('AI_LOGGER_SOURCE_JIRA_PARENT_PROJECT_KEY'),
+            'codeSnippets' => env('AI_LOGGER_CODE_SNIPPETS', true), // optional, see "Exceptions" below
             'level' => 'warning',
         ],
     ],
@@ -77,7 +78,15 @@ Log::channel('ai-logger')->error('Something went wrong.', [
 ]);
 ```
 
-This will send the log message, context data, log level, and timestamp as a JSON payload to the configured webhook URL.
+This will send the log message, context data and log level as a JSON payload to the configured webhook URL. The time the log was written is sent as `debug_data.logged_at` (ISO 8601 with microseconds), and data of Laravel's `Context` (or of any Monolog processor of the channel) as `debug_data.extra`.
+
+### Exceptions
+An exception logged as `context.exception` (as Laravel's exception handler does) is sent with its type, message, code, file, line and stack trace, and also with:
+
+- `previous` – the exception that caused it, nested the same way (each with `type`, `message`, `code`, `file`, `line` and its own `previous`), up to 5 levels deep.
+- `snippets` – the code around the line the exception and its causes were thrown on and around the lines of the first stack frames, for up to 4 locations in the application's own files (never `vendor/` or `node_modules/`). Each one is `file`, `line` and `code`, the numbered lines with the line itself marked by `>`. Set `codeSnippets` to `false` not to send any code.
+
+Anything else logged as `context.exception` is sent as it is.
 
 ### Console and queue context
 Logs written from artisan commands and queued jobs describe where they came from instead of a fake request:

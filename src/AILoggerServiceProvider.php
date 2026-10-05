@@ -39,7 +39,8 @@ class AILoggerServiceProvider extends ServiceProvider
                     $config['sourceJiraProjectCode'] ?? null,
                     $config['sourceJiraParentProjectKey'] ?? null,
                     $monologLevel,
-                    $config['bubble'] ?? true
+                    $config['bubble'] ?? true,
+                    (bool) ($config['codeSnippets'] ?? true)
                 ),
             ]);
         });
