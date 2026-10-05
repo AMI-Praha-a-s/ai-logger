@@ -79,6 +79,14 @@ Log::channel('ai-logger')->error('Something went wrong.', [
 
 This will send the log message, context data, log level, and timestamp as a JSON payload to the configured webhook URL.
 
+### Console and queue context
+Logs written from artisan commands and queued jobs describe where they came from instead of a fake request:
+
+- `debug_data.command` – the console command line, e.g. `artisan reports:send --month=9`. Values of secret-looking options (`--password=…`, `--api-token …`, `--*secret*`, `--*key*`, …) are replaced with `***`.
+- `debug_data.queue_job` – the queued job being run: `name` (job class), `queue`, `connection`, `attempt`, `max_tries` and `uuid`. It is also sent for jobs run synchronously during an HTTP request.
+- In console, `debug_data.url`, `debug_data.method` and the `ip` / `user_agent` of `user_tracking_data` are left out, since Laravel only fakes them from `APP_URL`.
+- `performance_data.execution_time` of a log written during a queued job is measured from the start of the job, not of the worker.
+
 ## Verifying Functionality
 1. **Set up a Test Webhook**: Use tools like [Webhook.site](https://webhook.site) or RequestBin to create a temporary webhook endpoint.
 2. **Trigger a Log**: Execute a log statement:

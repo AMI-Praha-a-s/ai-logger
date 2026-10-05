@@ -72,6 +72,8 @@ class AILogger extends AbstractProcessingHandler
                     'route_action' => $this->getRouteAction(),
                     'is_console' => $this->isRunningInConsole(),
                     'environment' => $this->getEnvironment(),
+                    'command' => $this->getConsoleCommand(),
+                    'queue_job' => QueueJobContext::job(),
                 ],
                 'performance_data' => [
                     'memory_usage' => [
@@ -118,48 +120,59 @@ class AILogger extends AbstractProcessingHandler
                 return;
             }
 
-            $ch = curl_init($this->webhookUrl);
-
-            curl_setopt_array($ch, [
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => $jsonPayload,
-                CURLOPT_HTTPHEADER => [
-                    'Content-Type: application/json',
-                    'Accept: application/json',
-                ],
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => 5,
-                CURLOPT_CONNECTTIMEOUT => 2,
-            ]);
-
-            $response = curl_exec($ch);
-
-            if (curl_errno($ch)) {
-                $this->logInternalError('cURL error - ' . curl_error($ch) . '. Probably invalid webhook URL.');
-            } else {
-                $httpStatusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                $decodedResponse = json_decode($response, true);
-
-                if ($httpStatusCode < 200 || $httpStatusCode >= 300) {
-                    $this->logInternalError('HTTP error', [
-                        'status_code' => $httpStatusCode,
-                        'message' => $decodedResponse['message'] ?? 'Unknown error',
-                        'errors'  => $decodedResponse['errors'] ?? null,
-                        'raw_response' => $response,
-                    ]);
-                } else {
-                    if (!isset($decodedResponse['status']) || $decodedResponse['status'] !== 'success') {
-                        $this->logInternalError('Unexpected API response format or failed status', [
-                            'response' => $decodedResponse,
-                        ]);
-                    }
-                }
-            }
-
-            curl_close($ch);
+            $this->send($jsonPayload);
         } catch (Throwable $e) {
             $this->logInternalError('Fatal error: ' . $e->getMessage() . ' on line ' . $e->getLine() . ' in file' . $e->getFile());
         }
+    }
+
+    /**
+     * Posts the JSON payload to the webhook.
+     *
+     * @param string $jsonPayload
+     * @return void
+     */
+    protected function send(string $jsonPayload): void
+    {
+        $ch = curl_init($this->webhookUrl);
+
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $jsonPayload,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Accept: application/json',
+            ],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 5,
+            CURLOPT_CONNECTTIMEOUT => 2,
+        ]);
+
+        $response = curl_exec($ch);
+
+        if (curl_errno($ch)) {
+            $this->logInternalError('cURL error - ' . curl_error($ch) . '. Probably invalid webhook URL.');
+        } else {
+            $httpStatusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $decodedResponse = json_decode($response, true);
+
+            if ($httpStatusCode < 200 || $httpStatusCode >= 300) {
+                $this->logInternalError('HTTP error', [
+                    'status_code' => $httpStatusCode,
+                    'message' => $decodedResponse['message'] ?? 'Unknown error',
+                    'errors'  => $decodedResponse['errors'] ?? null,
+                    'raw_response' => $response,
+                ]);
+            } else {
+                if (!isset($decodedResponse['status']) || $decodedResponse['status'] !== 'success') {
+                    $this->logInternalError('Unexpected API response format or failed status', [
+                        'response' => $decodedResponse,
+                    ]);
+                }
+            }
+        }
+
+        curl_close($ch);
     }
 
     /**
@@ -206,6 +219,11 @@ class AILogger extends AbstractProcessingHandler
     protected function getRequestUrl(): ?string
     {
         try {
+            // In console the request is a fake one made from APP_URL (GET, 127.0.0.1, "Symfony" user agent)
+            if ($this->isRunningInConsole()) {
+                return null;
+            }
+
             return Request::fullUrl();
         } catch (Throwable $e) {
             return null;
@@ -215,6 +233,10 @@ class AILogger extends AbstractProcessingHandler
     protected function getRequestMethod(): ?string
     {
         try {
+            if ($this->isRunningInConsole()) {
+                return null;
+            }
+
             return Request::method();
         } catch (Throwable $e) {
             return null;
@@ -248,6 +270,58 @@ class AILogger extends AbstractProcessingHandler
         }
     }
 
+    protected function getConsoleCommand(): ?string
+    {
+        try {
+            $argv = $_SERVER['argv'] ?? [];
+
+            if (!$this->isRunningInConsole() || empty($argv)) {
+                return null;
+            }
+
+            return implode(' ', [basename((string) $argv[0]), ...$this->redactCommandArguments(array_slice($argv, 1))]);
+        } catch (Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Replaces values of secret-looking options, given as "--password=secret" or "--password secret".
+     *
+     * @param array $arguments
+     * @return array
+     */
+    protected function redactCommandArguments(array $arguments): array
+    {
+        $redacted = [];
+        $redactNext = false;
+
+        foreach ($arguments as $argument) {
+            $argument = (string) $argument;
+
+            if ($redactNext && !str_starts_with($argument, '-')) {
+                $redacted[] = '***';
+                $redactNext = false;
+
+                continue;
+            }
+
+            $redactNext = false;
+
+            if (preg_match('/^(--?[\w.-]*(?:pass|secret|token|key|auth|credential)[\w.-]*)(=.*)?$/i', $argument, $matches)) {
+                if (isset($matches[2])) {
+                    $argument = $matches[1] . '=***';
+                } else {
+                    $redactNext = true;
+                }
+            }
+
+            $redacted[] = $argument;
+        }
+
+        return $redacted;
+    }
+
     protected function getEnvironment(): ?string
     {
         try {
@@ -260,7 +334,9 @@ class AILogger extends AbstractProcessingHandler
     protected function getExecutionTime(): float
     {
         try {
-            $startTime = defined('\LARAVEL_START') ? \LARAVEL_START : ($_SERVER['REQUEST_TIME_FLOAT'] ?? microtime(true));
+            // In a queue worker LARAVEL_START is the worker's start, so measure from the job's start
+            $startTime = QueueJobContext::startedAt()
+                ?? (defined('\LARAVEL_START') ? \LARAVEL_START : ($_SERVER['REQUEST_TIME_FLOAT'] ?? microtime(true)));
             return (microtime(true) - $startTime) * 1000;
         } catch (Throwable $e) {
             return 0.0;
@@ -288,6 +364,10 @@ class AILogger extends AbstractProcessingHandler
     protected function getClientIp(): ?string
     {
         try {
+            if ($this->isRunningInConsole()) {
+                return null;
+            }
+
             return Request::ip();
         } catch (Throwable $e) {
             return null;
@@ -297,6 +377,10 @@ class AILogger extends AbstractProcessingHandler
     protected function getUserAgent(): ?string
     {
         try {
+            if ($this->isRunningInConsole()) {
+                return null;
+            }
+
             return Request::userAgent();
         } catch (Throwable $e) {
             return null;

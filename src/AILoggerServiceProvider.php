@@ -2,8 +2,13 @@
 
 namespace AmiPraha\AILogger;
 
+use Illuminate\Foundation\Http\Events\RequestHandled;
+use Illuminate\Queue\Events\JobProcessed;
+use Illuminate\Queue\Events\JobProcessing;
+use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\ServiceProvider;
 use Monolog\Logger;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 
 class AILoggerServiceProvider extends ServiceProvider
@@ -37,6 +42,17 @@ class AILoggerServiceProvider extends ServiceProvider
                     $config['bubble'] ?? true
                 ),
             ]);
+        });
+
+        // Remember the queued job being run, so logs written during it carry the job
+        Event::listen(JobProcessing::class, function (JobProcessing $event) {
+            QueueJobContext::start($event->connectionName, $event->job);
+        });
+
+        // Not on JobFailed: the worker reports the job's exception only after that event.
+        // Looping is dispatched with until(), so this listener must not return anything.
+        Event::listen([JobProcessed::class, Looping::class, RequestHandled::class], function () {
+            QueueJobContext::clear();
         });
     }
 }
