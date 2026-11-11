@@ -45,6 +45,10 @@ class AILoggerServiceProvider extends ServiceProvider
             ]);
         });
 
+        if ($this->app->runningInConsole()) {
+            $this->commands([Console\TestCommand::class]);
+        }
+
         // Remember the queued job being run, so logs written during it carry the job
         Event::listen(JobProcessing::class, function (JobProcessing $event) {
             QueueJobContext::start($event->connectionName, $event->job);

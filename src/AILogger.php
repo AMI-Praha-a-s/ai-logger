@@ -38,6 +38,15 @@ class AILogger extends AbstractProcessingHandler
     protected ?string $sourceJiraParentProjectKey;
     protected bool $codeSnippets;
 
+    /**
+     * How sending the last log ended: whether AI Logger accepted it, the HTTP status code it answered with,
+     * and why it was not sent (the message and context written to ai_logger_critical.log). Only for the
+     * ai-logger:test command, the handler itself never lets an error out of write().
+     *
+     * @var array{sent: bool, status_code: int|null, error: string|null, error_context: array}|null
+     */
+    protected ?array $lastDelivery = null;
+
     public function __construct(
         ?string $webhookUrl = null,
         ?string $sourceCode = null,
@@ -65,6 +74,16 @@ class AILogger extends AbstractProcessingHandler
     }
 
     /**
+     * How sending the last log ended, null when no log has been sent yet.
+     *
+     * @return array{sent: bool, status_code: int|null, error: string|null, error_context: array}|null
+     */
+    public function getLastDelivery(): ?array
+    {
+        return $this->lastDelivery;
+    }
+
+    /**
      * Writes the log to the external webhook.
      *
      * @param LogRecord $record
@@ -72,6 +91,8 @@ class AILogger extends AbstractProcessingHandler
      */
     protected function write(LogRecord $record): void
     {
+        $this->lastDelivery = ['sent' => false, 'status_code' => null, 'error' => null, 'error_context' => []];
+
         try {
             if (empty($this->webhookUrl) || empty($this->sourceCode) || empty($this->sourceName) || empty($this->sourceUrl)) {
                 $this->logInternalError('webhookUrl, sourceCode, sourceName, or sourceUrl is missing, please add all of them to your config. See ai-logger documentation for more info.');
@@ -147,6 +168,8 @@ class AILogger extends AbstractProcessingHandler
             }
 
             $this->send($jsonPayload);
+
+            $this->lastDelivery['sent'] = $this->lastDelivery['error'] === null;
         } catch (Throwable $e) {
             $this->logInternalError('Fatal error: ' . $e->getMessage() . ' on line ' . $e->getLine() . ' in file' . $e->getFile());
         }
@@ -181,6 +204,7 @@ class AILogger extends AbstractProcessingHandler
         } else {
             $httpStatusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $decodedResponse = json_decode($response, true);
+            $this->lastDelivery['status_code'] = $httpStatusCode;
 
             if ($httpStatusCode < 200 || $httpStatusCode >= 300) {
                 $this->logInternalError('HTTP error', [
@@ -210,6 +234,9 @@ class AILogger extends AbstractProcessingHandler
      */
     protected function logInternalError(string $message, array $context = []): void
     {
+        $this->lastDelivery['error'] = $message;
+        $this->lastDelivery['error_context'] = $context;
+
         try {
             $timestamp = date('Y-m-d H:i:s');
             $line = "[$timestamp] [AILogger INTERNAL ERROR] $message";

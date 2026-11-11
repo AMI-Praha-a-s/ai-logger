@@ -98,15 +98,20 @@ Logs written from artisan commands and queued jobs describe where they came from
 - In console, `debug_data.url`, `debug_data.method` and the `ip` / `user_agent` of `user_tracking_data` are left out, since Laravel only fakes them from `APP_URL`.
 - `performance_data.execution_time` of a log written during a queued job is measured from the start of the job, not of the worker.
 
-## Verifying Functionality
-1. **Set up a Test Webhook**: Use tools like [Webhook.site](https://webhook.site) or RequestBin to create a temporary webhook endpoint.
-2. **Trigger a Log**: Execute a log statement:
-   
-   ```php
-   Log::channel('ai-logger')->info('Testing AI Logger');
-   ```
+## Testing the connection
+To check that the app can actually send logs to AI Logger, run:
 
-3. **Inspect Received Payload**: Confirm the JSON payload arrives at your test webhook.
+```sh
+php artisan ai-logger:test
+```
+
+The command sends a test error through the `ai-logger` channel (choose another one with `--channel=…`) and tells whether AI Logger received it. If it did not, the command says why: the channel is not defined or does not use the `ai-logger` driver, its `level` is above `error`, the config is incomplete, the webhook URL cannot be reached or redirects, or AI Logger rejected the log (with its validation errors). It also warns when the default log channel does not send to the `ai-logger` channel, since then the errors the app logs itself never reach AI Logger.
+
+The exit code is `0` when AI Logger received the test error and `1` otherwise, so the command can be used in deploy scripts.
+
+The test error is a real log in AI Logger. Its context holds `ai_logger_test: true`, and its message and context are the same every time, so all test errors of an app are grouped into one issue. The first test of an app opens that issue, which can send alerts like any new issue.
+
+When the app logs, failed deliveries are not shown anywhere but in `storage/logs/ai_logger_critical.log`.
 
 ## Requirements
 - **PHP:** `^8.2`

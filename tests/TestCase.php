@@ -19,6 +19,7 @@ abstract class TestCase extends BaseTestCase
         parent::setUp();
 
         CapturingAILogger::$payloads = [];
+        CapturingAILogger::$rejection = null;
         QueueJobContext::clear();
     }
 
@@ -38,9 +39,15 @@ abstract class TestCase extends BaseTestCase
 
     protected function defineEnvironment($app): void
     {
-        $app['log']->extend('ai-logger-capture', function () {
+        $app['log']->extend('ai-logger-capture', function ($app, array $config) {
             return new Logger('ai-logger', [
-                new CapturingAILogger('http://webhook.test', 'TESTAPP', 'Test App', 'http://app.test'),
+                new CapturingAILogger(
+                    'http://webhook.test',
+                    'TESTAPP',
+                    'Test App',
+                    'http://app.test',
+                    level: Logger::toMonologLevel($config['level'] ?? 'debug')->value
+                ),
             ]);
         });
 
